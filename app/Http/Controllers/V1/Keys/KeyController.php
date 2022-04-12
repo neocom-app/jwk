@@ -187,7 +187,10 @@ class KeyController extends Controller
 
         // If the key was created, return a 201, otherwise return a 422
         if ($created) {
-            $response = response()->noContent(Response::HTTP_CREATED);
+            $response = response()->noContent(Response::HTTP_CREATED, [
+                'Location' => route('v1.keys.singleKey.getKey', [ 'key_id' => $key['kid'] ]),
+                'X-JWK-Thumbprint' => $key['kid'],
+            ]);
         } else {
             $response = response()->json([
                 'error' => [
@@ -237,7 +240,10 @@ class KeyController extends Controller
             $this->cache->delete('single_key', $keyID);
 
             // Set the 204 response to return
-            $response = response()->noContent();
+            $response = response()->noContent(Response::HTTP_NO_CONTENT, [
+                'Location' => route('v1.keys.singleKey.getKey', [ 'key_id' => $newJwkData['kid'] ]),
+                'X-JWK-Thumbprint' => $newJwkData['kid'],
+            ]);
 
         // Otherwise the key didn't rotate successfully, throw an error
         } else {
@@ -282,14 +288,14 @@ class KeyController extends Controller
     public function deleteKey(Request $request, string $keyID)
     {
         // Get the requested key
-        $key = $this->repo->getSingleKey($keyID);
+        $key = $this->repo->getSingleKey($keyID, ['includeRevoked' => true]);
 
         // Do we need to force delete the key
-        $forceDelete = $request->all(['force']);
+        $forceDelete = $request->post('force', false);
 
         // If this is a force delete, swap the method over
         $methodName = 'deleteKey';
-        if (Arr::get($forceDelete, 'force', false)) {
+        if ($forceDelete) {
             $methodName = 'forceDeleteKey';
         }
 

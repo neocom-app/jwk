@@ -5,6 +5,7 @@ namespace Neocom\JWK\Repositories;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Neocom\JWK\Contracts\Repositories\KeyRepository as KeyRepositoryContract;
 use Neocom\JWK\Models\Key;
 
@@ -71,11 +72,11 @@ class KeyRepository implements KeyRepositoryContract
 
         // If we have a key id, add the relevant clause
         if (($key = Arr::get($options, 'key')) !== '') {
-            $query->where(function (Builder $query) use ($key) {
-                $query
-                    ->where('id', $key)
-                    ->orWhere('thumbprint', $key);
-            });
+            if (Str::isUuid($key)) {
+                $query->where('id', $key);
+            } else {
+                $query->where('thumbprint', $key);
+            }
         }
 
         // If we have any tags, add the relevant clause(s)
