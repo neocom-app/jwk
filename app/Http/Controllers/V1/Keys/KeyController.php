@@ -2,6 +2,7 @@
 
 namespace Neocom\JWK\Http\Controllers\V1\Keys;
 
+use Closure;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -32,123 +33,109 @@ class KeyController extends Controller
         $this->cache = $cache;
     }
 
-    public function listKeys(Request $request, string $keyType, KeyEncryptor $encryptor, EncryptionKeyRepository $encryptionKeyRepo)
+    public function listKeys(Request $request, string $keyType)
     {
         // Extract the key type
         $keyType = $request->getKeyType($keyType);
 
-        // Pull out all of the tags
-        $tags = $request->getParametersWithPrefix('tag:');
+        // Catch errors
+        try {
 
-        // Get any encryption settings if required
-        $encryptionSettings = $request->getParametersWithPrefix('encryption:');
+            // Run the key process through the encryptor if needed
+            $keySet = $this->encryptKeySetIfRequired(
+                $request,
+                function () use ($keyType) {
+                    return in_array($keyType, ['all', 'private']);
+                },
+                function () use ($request, $keyType) {
 
-        // Set flags based on the passed key type
-        $includeRevokedKeys = in_array($keyType, ['all', 'public']);
-        $convertToPublic    = in_array($keyType, ['public']);
-        $shouldBeEncrypted  = in_array($keyType, ['all', 'private']);
+                    // Pull out all of the tags
+                    $tags = $request->getParametersWithPrefix('tag:');
 
-        // Get the encryption enabled flag
-        $encryptionEnabled = $encryptor->isEncryptionEnabled();
+                    // Set flags based on the passed key type
+                    $includeRevokedKeys = in_array($keyType, ['all', 'public']);
+                    $convertToPublic    = in_array($keyType, ['public']);
 
-        // Some blank variables
-        $encryptionKey = '';
+                    // Create the cache key
+                    $cacheKey = $keyType;
 
-        // Check if encryption is enabled (only for )
-        if ($encryptionEnabled && $shouldBeEncrypted) {
+                    // If there are any tags, extract them and add it to the cache key
+                    if (count($tags)) {
 
-            // If no encryption has been provided, throw a bad request error
-            if ($keyType === 'private' && ! Arr::has($encryptionSettings, 'key')) {
-                return response()->json([
-                    'error' => [
-                        'No encryption key has been provided'
-                    ],
-                ], Response::HTTP_BAD_REQUEST);
-            }
+                        // Convert the tags into a md5 for the cache
+                        ksort($tags);
+                        $tagsKey = md5(json_encode($tags));
 
-            // Get the encryption key
-            $encryptionKey = Arr::get($encryptionSettings, 'key', '');
+                        // Create the cache key
+                        $cacheKey .= ':'.$tagsKey;
+                    }
 
-            // If an encryption key has been provided, attempt to get the actual key from the database
-            if ($encryptionKey !== '') {
-                $encryptionKey = $encryptionKeyRepo->getEncryptionKey($encryptionKey);
-            }
+                    // Attempt to get the list of keys from the cache
+                    if (($keySet = $this->cache->get('list', $cacheKey)) === null) {
 
-            // If this is an all key request and there is no encryption key, force all keys to public keys
-            if ($keyType === 'all' && $encryptionKey === '') {
-                $keyType = 'public';
-                $convertToPublic = true;
-            }
+                        // Get all the keys from the database
+                        /** @var Collection */
+                        $keys = $this->repo->getAll(['includeRevoked' => $includeRevokedKeys, 'tags' => $tags]);
+
+                        // Convert each key into a JWK
+                        $keys = $keys->map(function ($item) use ($convertToPublic) {
+                            return $this->converter->convertKeyToJWK($item, $convertToPublic);
+                        });
+
+                        // Convert the list of keys to a JWKSet
+                        $keySet = JWKUtils::createJWKSet($keys);
+
+                        // If there are no results, don't attempt to cache it
+                        if ($keys->isNotEmpty()) {
+
+                            // Store the result in the cache
+                            $this->cache->store('list', $cacheKey, $keySet);
+                        }
+
+                    // Data was obtained from the cache, force it into a JWKSet object
+                    } else {
+                        $keySet = JWKUtils::createJWKSet($keySet, true);
+                    }
+
+                    return $keySet;
+                }
+            );
+
+            return response()->json($keySet);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => [
+                    $e->getMessage()
+                ]
+            ], Response::HTTP_BAD_REQUEST);
         }
-
-        // Create the cache key
-        $cacheKey = $keyType;
-
-        // If there are any tags, extract them and add it to the cache key
-        if (count($tags)) {
-
-            // Convert the tags into a md5 for the cache
-            ksort($tags);
-            $tagsKey = md5(json_encode($tags));
-
-            // Create the cache key
-            $cacheKey .= ':'.$tagsKey;
-        }
-
-        // Attempt to get the list of keys from the cache
-        if (($keyset = $this->cache->get('list', $cacheKey)) === null) {
-
-            // Get all the keys from the database
-            /** @var Collection */
-            $keys = $this->repo->getAll(['includeRevoked' => $includeRevokedKeys, 'tags' => $tags]);
-
-            // Convert each key into a JWK
-            $keys = $keys->map(function ($item) use ($convertToPublic) {
-                return $this->converter->convertKeyToJWK($item, $convertToPublic);
-            });
-
-            // Convert the list of keys to a JWKSet
-            $keyset = JWKUtils::createJWKSet($keys);
-
-            // If there are no results, don't attempt to cache it
-            if ($keys->isNotEmpty()) {
-
-                // Store the result in the cache
-                $this->cache->store('list', $cacheKey, $keyset);
-            }
-
-        // Data was obtained from the cache, force it into a JWKSet object
-        } else {
-            $keyset = JWKUtils::createJWKSet($keyset, true);
-        }
-
-        // Check if the key should be encrypted
-        if ($shouldBeEncrypted && $encryptionKey !== '') {
-
-            // Encrypt the key set with the encryption key
-            $keyset = $encryptor->encryptKeySet($keyset, $encryptionKey);
-        }
-
-        return response()->json($keyset);
     }
 
     public function getSingleKey(Request $request, string $keyID)
     {
-        // Try and get the key from the cache
-        if (($jwkset = $this->cache->get('single_key', $keyID)) === null) {
+        // Load the key from the database
+        $key = $this->repo->getSingleKey($keyID, ['includeRevoked' => true]);
 
-            // Attempt to get the specified key from the database
-            $key = $this->repo->getSingleKey($keyID, ['includeRevoked' => true]);
+        // Run the key process through the encryptor if needed
+        $keySet = $this->encryptKeySetIfRequired(
+            $request,
+            function () use ($key) {
+                return (! $key->revoked) || false;
+            },
+            function ($_, bool $resultToBeEncrypted) use ($key) {
 
-            // Convert the key to a JWKSet
-            $jwk    = $this->converter->convertKeyToJWK($key);
-            $jwkset = JWKUtils::createJWKSet($jwk);
+                // Convert the key to a JWKSet
+                $jwk    = $this->converter->convertKeyToJWK($key, ! $resultToBeEncrypted);
+                $keySet = JWKUtils::createJWKSet($jwk);
 
-            // Store the key in the cache
-            $this->cache->store('single_key', $keyID, $jwkset);
+                // Return the keyset
+                return $keySet;
+            },
+            false
+        );
 
-        }
-        return response()->json($jwkset);
+        return response()->json($keySet);
     }
 
     public function generateKey(Request $request)
@@ -237,7 +224,6 @@ class KeyController extends Controller
 
             // Purge the relevant caches
             $this->cache->purge('list');
-            $this->cache->delete('single_key', $keyID);
 
             // Set the 204 response to return
             $response = response()->noContent(Response::HTTP_NO_CONTENT, [
@@ -269,7 +255,6 @@ class KeyController extends Controller
 
         // Purge the relevant caches
         $this->cache->purge('list');
-        $this->cache->delete('single_key', $keyID);
 
         // Return with a 204 status code saying that the key has been revoked
         if ($revoked) {
@@ -304,7 +289,6 @@ class KeyController extends Controller
 
         // Purge the relevant caches
         $this->cache->purge('list');
-        $this->cache->delete('single_key', $keyID);
 
         // Return with a 204 status code saying that the key has been revoked or return with a 500 if it failed
         if ($deleted) {
@@ -318,5 +302,51 @@ class KeyController extends Controller
         }
 
         return $response;
+    }
+
+    protected function encryptKeySetIfRequired(Request $request, $shouldBeEncrypted, Closure $callback, bool $throwOnMissingKey = true)
+    {
+        // Load the encryptor from DI
+        /** @var \Neocom\JWK\Contracts\Helpers\KeyEncryptor */
+        $encryptor = app()->make(KeyEncryptor::class);
+
+        // Get any encryption settings if required
+        $encryptionSettings = $request->getParametersWithPrefix('encryption:');
+
+        // Determine if encryption should be enabled
+        if (is_callable($shouldBeEncrypted)) {
+            $encryptResult = $shouldBeEncrypted($request);
+        } else {
+            $encryptResult = $shouldBeEncrypted ?: false;
+        }
+
+        // If the encryptor is not enabled, just return the callback
+        if (! $encryptor->isEncryptionEnabled() || ! $encryptResult) {
+            return $callback($request, false);
+        }
+
+        // If no key has been provided, throw an error
+        if (Arr::has($encryptionSettings, 'key')) {
+            $encryptionKey = Arr::get($encryptionSettings, 'key', '');
+        } else if (! $throwOnMissingKey) {
+            return $callback($request, false);
+        } else {
+            throw new \Exception('No encryption key has been provided');
+        }
+
+        // Load the encryption key repo from DI
+        /** @var \Neocom\JWK\Contracts\Repositories\EncryptionKeyRepository */
+        $encryptionKeyRepo = app()->make(EncryptionKeyRepository::class);
+
+        // If an encryption key has been provided, attempt to get the actual key from the database
+        $encryptionKey = $encryptionKeyRepo->getEncryptionKey($encryptionKey);
+
+        // Get the JWK set from the callback
+        $jwkSet = $callback($request, $encryptResult);
+
+        // Encrypt the key set with the encryption key
+        $encryptedKeySet = $encryptor->encryptKeySet($jwkSet, $encryptionKey);
+
+        return $encryptedKeySet;
     }
 }
