@@ -67,29 +67,27 @@ class AppServiceProvider extends ServiceProvider
         // Add an array defaults macro
         Arr::macro('applyDefaults', function ($arr, $defaults, bool $stripMissingKeys = false) {
             /** @var Arr $this */
-            if (! static::isAssoc($arr) || ! static::isAssoc($defaults)) {
-                return $arr;
-            }
-
-            $arr = array_merge($defaults, $arr);
-
-            if ($stripMissingKeys) {
-                $arr = static::only($arr, array_keys($defaults));
-            }
-
-            return $arr;
+            return collect($defaults)
+                ->merge($arr)
+                ->when($stripMissingKeys)
+                ->only(array_keys($defaults))
+                ->all();
         });
 
         // Some request macros
         Request::macro('getParametersWithPrefix', function (string $prefix) {
             /** @var Request $this */
-            return collect($this->all())->filter(function ($value, $key) use ($prefix) {
-                return Str::startsWith($key, $prefix);
-            })->mapWithKeys(function ($value, $key) {
-                return [ Str::lower($key) => Str::lower($value) ];
-            })->mapWithKeys(function ($value, $key) use ($prefix) {
-                return [ Str::removePrefix($key, $prefix) => $value ];
-            })->toArray();
+            return collect($this->all())
+                ->filter(function ($value, $key) use ($prefix) {
+                    return Str::startsWith($key, $prefix);
+                })
+                ->mapWithKeys(function ($value, $key) {
+                    return [ Str::lower($key) => Str::lower($value) ];
+                })
+                ->mapWithKeys(function ($value, $key) use ($prefix) {
+                    return [ Str::removePrefix($key, $prefix) => $value ];
+                })
+                ->toArray();
         });
         Request::macro('getKeyType', function (string $defaultType) {
             /** @var Request $this */
