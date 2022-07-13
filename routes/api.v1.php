@@ -24,8 +24,11 @@ Route::group(['prefix' => 'keys', 'as' => 'keys.'], function() {
     // Generate key
     Route::post('/generate', [KeyController::class, 'generateKey'])->name('generateKey');
 
+    // Cleanup keys
+    Route::post('/cleanup', [KeyController::class, 'cleanupKeys'])->name('cleanupKeys');
+
     // Commands for an individual key
-    Route::group(['prefix' => '/{key_id}', 'as' => 'singleKey.', 'where' => ['[A-Za-z0-9\-_]{32,}']], function() {
+    Route::group(['prefix' => '/{key_id}', 'where' => ['[A-Za-z0-9\-_]{32,}']], function() {
         Route::get('/', [KeyController::class, 'getSingleKey'])->name('getKey');
         Route::post('/rotate', [KeyController::class, 'rotateKey'])->name('rotateKey'); // Revoke's and create's a new key with the same type and length
         Route::post('/revoke', [KeyController::class, 'revokeKey'])->name('revokeKey');

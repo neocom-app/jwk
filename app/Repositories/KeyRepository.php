@@ -4,6 +4,7 @@ namespace Neocom\JWK\Repositories;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Neocom\JWK\Contracts\Repositories\KeyRepository as KeyRepositoryContract;
@@ -20,7 +21,7 @@ class KeyRepository implements KeyRepositoryContract
         $options = Arr::applyDefaults($options, [
             'tags'           => [],
             'includeRevoked' => true,
-        ], true);
+        ]);
 
         return $this->getKeyQueryBuilder($options)->get();
     }
@@ -35,7 +36,7 @@ class KeyRepository implements KeyRepositoryContract
             'includeTags'    => false,
             'includeRevoked' => false,
             'includeTrashed' => false,
-        ], true);
+        ]);
         $options = array_merge(['key' => $keyID], $options);
 
         return $this->getKeyQueryBuilder($options)->firstOrFail();
@@ -56,14 +57,24 @@ class KeyRepository implements KeyRepositoryContract
             'includeTags'    => false,
             'includeRevoked' => false,
             'includeTrashed' => false,
-        ]);
+            'onlyRevoked'    => false,
+            'onlyTrashed'    => false,
+        ], true);
 
         // Set up the query builder
         $query = Key::query();
 
-        // Add the revoked and trashed clauses
-        $query->withRevoked($options['includeRevoked']);
-        $query->withTrashed($options['includeTrashed']);
+        // For the include/only clauses. If both of them are specified, then the only clause trumps over the include clause
+        if ($options['includeRevoked'] && $options['onlyRevoked']) $options['includeRevoked'] = false;
+        if ($options['includeTrashed'] && $options['onlyTrashed']) $options['includeTrashed'] = false;
+
+        // Add the revoked and trashed clauses to the query.
+        if ($options['includeRevoked']) $query->withRevoked();
+        if ($options['includeTrashed']) $query->withTrashed();
+
+        // Add the only revoked/trashed clases if they are required
+        if ($options['onlyRevoked']) $query->onlyRevoked();
+        if ($options['onlyTrashed']) $query->onlyTrashed();
 
         // If tags need to be included, load the relationship
         if (Arr::get($options, 'includeTags')) {
@@ -81,9 +92,9 @@ class KeyRepository implements KeyRepositoryContract
 
         // If we have any tags, add the relevant clause(s)
         if (($tags = collect(Arr::get($options, 'tags')))->isNotEmpty()) {
-            $query->whereHas('tags', function (Builder $query) use ($tags) {
+            $query->where(function (Builder $query) use ($tags) {
                 foreach ($tags as $key => $value) {
-                    $query->where(function (Builder $query) use ($key, $value) {
+                    $query->whereHas('tags', function (Builder $query) use ($key, $value) {
                         $query->where('tag_name', '=', $key)->where('tag_value', '=', $value);
                     });
                 }
@@ -175,13 +186,7 @@ class KeyRepository implements KeyRepositoryContract
      */
     public function deleteKey($key)
     {
-        // Get the key, if required
-        if (! ($key instanceof Key)) {
-            $key = $this->getSingleKey($key);
-        }
-
-        // Delete the key (this will soft-delete the key by default)
-        return $key->delete();
+        return $this->deleteKeyCollection($key);
     }
 
     /**
@@ -189,12 +194,39 @@ class KeyRepository implements KeyRepositoryContract
      */
     public function forceDeleteKey($key)
     {
-        // Get the key, if required. (Including trashed or soft-deleted keys)
-        if (! ($key instanceof Key)) {
-            $key = $this->getSingleKey($key, ['includeRevoked' => true, 'includeTrashed' => true]);
+        // Force delete all listed keys
+        return $this->deleteKeyCollection($key, ['includeRevoked' => true, 'includeTrashed' => true], 'forceDelete');
+    }
+
+    /**
+     * Delete a single or collection of keys
+     *
+     * @param mixed $keys
+     * @param array $options
+     * @param string $method
+     * @return bool
+     */
+    protected function deleteKeyCollection($keys, array $keyOptions = [], string $deleteMethod = 'delete')
+    {
+        // Make sure that the passed key is in a colletion
+        $keys = Collection::wrap($keys);
+
+        // If the list is empty, just exit
+        if ($keys->isEmpty()) {
+            return true;
         }
 
-        // Delete the key (this will soft-delete the key by default)
-        return $key->forceDelete();
+        // Make sure that each key is a key model instance
+        $keys = $keys->map(function ($key) use ($keyOptions) {
+            if (! ($key instanceof Key)) {
+                $key = $this->getSingleKey($key, $keyOptions);
+            }
+            return $key;
+        });
+
+        // Delete each of the keys (this will soft-delete the key by default)
+        $results = $keys->map->{$deleteMethod}();
+
+        return true;
     }
 }
