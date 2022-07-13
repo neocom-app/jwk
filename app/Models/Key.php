@@ -43,6 +43,15 @@ class Key extends Model
         return $this->save();
     }
 
+    public function canBeCleanedUp($days)
+    {
+        if (is_null($this->revoked_at)) {
+            return false;
+        }
+
+        return $this->revoked_at->diffInDays() > $days;
+    }
+
     /**
      * Determine if the key has been revoked.
      *

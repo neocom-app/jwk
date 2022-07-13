@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Neocom\JWK\Contracts\Cache\KeyCache;
 use Neocom\JWK\Contracts\Helpers\KeyConverter;
@@ -227,7 +228,7 @@ class KeyController extends Controller
 
             // Set the 204 response to return
             $response = response()->noContent(Response::HTTP_NO_CONTENT, [
-                'Location' => route('v1.keys.singleKey.getKey', [ 'key_id' => $newJwkData['kid'] ]),
+                'Location' => route('v1.keys.getKey', [ 'key_id' => $newJwkData['kid'] ]),
                 'X-JWK-Thumbprint' => $newJwkData['kid'],
             ]);
 
@@ -296,7 +297,50 @@ class KeyController extends Controller
         } else {
             $response = response()->json([
                 'error' => [
-                    'Unable to generate key'
+                    'Unable to delete key'
+                ]
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+
+        return $response;
+    }
+
+    public function cleanupKeys(Request $request)
+    {
+        // Pull out all of the tags
+        $tags = $request->getParametersWithPrefix('tag:');
+
+        // Get the list of keys to be deleted
+        $keys = $this->repo->getAll(['tags' => $tags, 'onlyRevoked' => true]);
+
+        // Get the number of days to cleanup keys from. Defaults to 30 days
+        $days = $request->post('days', 30);
+
+        // Filter the list to keys that were revoked after a certian timeframe
+        $keys = $keys->filter->canBeCleanedUp($days);
+
+        // Do we need to force delete the keys
+        $forceDelete = $request->post('force', false);
+
+        // If this is a force delete, swap the method over
+        $methodName = 'deleteKey';
+        if ($forceDelete) {
+            $methodName = 'forceDeleteKey';
+        }
+
+        // Get the list of keys to be deleted
+        $deleted = $this->repo->{$methodName}($keys);
+
+        // Purge the relevant caches
+        $this->cache->purge('list');
+
+        // Return with a 204 status code saying that the key has been revoked or return with a 500 if it failed
+        if ($deleted) {
+            $response = response()->noContent();
+        } else {
+            $response = response()->json([
+                'error' => [
+                    'Unable to cleanup key(s)'
                 ]
             ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
@@ -314,11 +358,7 @@ class KeyController extends Controller
         $encryptionSettings = $request->getParametersWithPrefix('encryption:');
 
         // Determine if encryption should be enabled
-        if (is_callable($shouldBeEncrypted)) {
-            $encryptResult = $shouldBeEncrypted($request);
-        } else {
-            $encryptResult = $shouldBeEncrypted ?: false;
-        }
+        $encryptResult = value($shouldBeEncrypted, $request) ?: false;
 
         // If the encryptor is not enabled, just return the callback
         if (! $encryptor->isEncryptionEnabled() || ! $encryptResult) {
