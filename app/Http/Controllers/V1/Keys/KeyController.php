@@ -176,7 +176,7 @@ class KeyController extends Controller
         // If the key was created, return a 201, otherwise return a 422
         if ($created) {
             $response = response()->noContent(Response::HTTP_CREATED, [
-                'Location' => route('v1.keys.singleKey.getKey', [ 'key_id' => $key['kid'] ]),
+                'Location' => route('v1.keys.getKey', [ 'key_id' => $key['kid'] ]),
                 'X-JWK-Thumbprint' => $key['kid'],
             ]);
         } else {
